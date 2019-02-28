@@ -131,6 +131,8 @@
     </FxCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="Common.h" />
+    <ClInclude Include="FontTextureMap.h" />
     <ClInclude Include="Game.h" />
     <ClInclude Include="StgObject.h" />
   </ItemGroup>
@@ -152,6 +154,7 @@
     </FxCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="FontTextureMap.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="StgObject.cpp" />
   </ItemGroup>

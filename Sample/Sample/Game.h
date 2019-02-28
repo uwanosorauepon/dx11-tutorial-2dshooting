@@ -2,13 +2,7 @@
 
 #include <memory>
 
-#define WIN32_LEAN_AND_MEAN
-#include <Windows.h>
-
 namespace dxstg {
-
-constexpr UINT clientWidth = 640;
-constexpr UINT clientHeight = 480;
 
 class StgObject;
 class Player;

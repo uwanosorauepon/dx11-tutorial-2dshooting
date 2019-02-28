@@ -17,6 +17,8 @@
 #include <DirectXMath.h>  // 行列の演算など
 
 // 自作ヘッダー
+#include "Common.h"
+#include "FontTextureMap.h"
 #include "Game.h"
 #include "StgObject.h"
 
@@ -26,18 +28,6 @@
 using Microsoft::WRL::ComPtr;
 
 namespace {
-
-void ThrowErrorMessage(const wchar_t* mes)
-{
-	throw std::wstring(mes);
-}
-
-void ThrowIfFailed(const wchar_t* mes, HRESULT hr)
-{
-	if (FAILED(hr)) {
-		ThrowErrorMessage(mes);
-	}
-}
 
 class BinFile {
 public:
@@ -87,48 +77,6 @@ HRESULT GetWICFactory(IWICImagingFactory** factory)
 	}
 
 	return hr;
-}
-
-void CreateTexture(ID3D11Device* device, ID3D11ShaderResourceView** ppShaderResourceView)
-{
-	constexpr int w = 32;
-	constexpr int h = 32;
-
-	ComPtr<ID3D11Texture2D> texture2d;
-
-	D3D11_TEXTURE2D_DESC texture2dDesc;
-	texture2dDesc.Width = w;
-	texture2dDesc.Height = h;
-	texture2dDesc.MipLevels = 1;  // ミニマップを作成しない
-	texture2dDesc.ArraySize = 1;
-	texture2dDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-	texture2dDesc.SampleDesc.Count = 1;
-	texture2dDesc.SampleDesc.Quality = 0;
-	texture2dDesc.Usage = D3D11_USAGE_IMMUTABLE;  // 変更不可
-	texture2dDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-	texture2dDesc.CPUAccessFlags = 0;
-	texture2dDesc.MiscFlags = 0;
-
-	UINT buf[w * h];
-	for (int y = 0; y < h; ++y) {
-		for (int x = 0; x < w; ++x) {
-			buf[y * w + x] = 0xff00ffff;
-			                // aabbggrr;
-		}
-	}
-
-	D3D11_SUBRESOURCE_DATA initialData;
-	initialData.pSysMem = buf;
-	initialData.SysMemPitch = w * 4;
-	initialData.SysMemSlicePitch = 0;  // これは意味はない
-
-	device->CreateTexture2D(&texture2dDesc, &initialData, texture2d.ReleaseAndGetAddressOf());
-	// if (FAILED(hr)) { OutputDebugString(_T("FAILED: CreateTexture2D\n")); return hr; }
-
-	device->CreateShaderResourceView(texture2d.Get(), nullptr, ppShaderResourceView);
-	// if (FAILED(hr)) { OutputDebugString(_T("FAILED: CreateShaderResourceView\n")); return hr; }
-	
-	// return S_OK;
 }
 
 // テクスチャの読み込み
@@ -223,13 +171,10 @@ HRESULT LoadTexture(ID3D11Device* device, LPCWSTR filename, ID3D11ShaderResource
 	return S_OK;
 }
 
-
-using namespace dxstg;
-
-Input _input;
-std::list<std::unique_ptr<StgObject>> _objects;
-Player* _player = nullptr;
-
+// シューティング関連
+dxstg::Input _input;
+std::list<std::unique_ptr<dxstg::StgObject>> _objects;
+dxstg::Player* _player = nullptr;
 
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
@@ -277,46 +222,35 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 	return DefWindowProc(hWnd, message, wParam, lParam);
 }
 
-} // end unnamed namespace
+// デバイス関連リソース
+const TCHAR wndclassName[] = _T("DX11TutorialWindowClass");
+HWND hWnd;
+ComPtr<ID3D11Device> device;
+ComPtr<IDXGISwapChain> swapChain;
+ComPtr<ID3D11DeviceContext> immediateContext;
+D3D_FEATURE_LEVEL featureLevel;
+ComPtr<ID3D11Texture2D> backBuffer;
+ComPtr<ID3D11RenderTargetView> renderTargetView;
+D3D11_VIEWPORT viewports[1];
+ComPtr<ID3D11ShaderResourceView> srvXchu;   // xchuのテクスチャ
+ComPtr<ID3D11ShaderResourceView> srvBullet; // bulletのテクスチャ
+ComPtr<ID3D11InputLayout> inputLayout;
+ComPtr<ID3D11VertexShader> vertexShader;
+ComPtr<ID3D11Buffer> vsCBuffer;
+ComPtr<ID3D11PixelShader> pixelShader;
+ComPtr<ID3D11Buffer> psCBuffer;
+ComPtr<ID3D11SamplerState> psSamplerState;
+ComPtr<ID3D11Buffer> vertexBuffer;
+ComPtr<ID3D11RasterizerState> rasterizerState;
+ComPtr<ID3D11BlendState> blendState;
+std::unique_ptr<dxstg::FontTextureMap> font;
 
-
-namespace dxstg {
-
-void AddObject(std::unique_ptr<StgObject>&& newObject)
+// リソースの初期化
+void Init(HINSTANCE hInstance)
 {
-	_objects.emplace_back(std::move(newObject));
-}
-
-Player* GetPlayer()
-{
-	return _player;
-}
-
-void SetPlayer(Player* p)
-{
-	_player = p;
-}
-
-Input GetInput()
-{
-	return _input;
-}
-
-} // end dxstg
-
-
-int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLine, int nCmdShow)
-{
-	ThrowIfFailed(L"CoInitialize",
-		CoInitialize(nullptr));  // テクスチャの読み込みがCOMのため、これを呼び出す必要がある。
-
-	HRESULT hr;
-
-	OutputDebugString(_T("こんにちわーるど\n"));
+	using namespace dxstg;
 
 	// Windowを作成
-
-	TCHAR wndclassName[] = _T("DX11TutorialWindowClass");
 	WNDCLASS wndclass;
 	wndclass.style = 0;  // ここに使える定数一覧: https://docs.microsoft.com/ja-jp/windows/desktop/winmsg/window-class-styles
 	wndclass.lpfnWndProc = WndProc;
@@ -324,39 +258,31 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
 	wndclass.cbWndExtra = 0;
 	wndclass.hInstance = hInstance;
 	wndclass.hIcon = nullptr;
-	wndclass.hCursor = LoadCursor( nullptr, IDC_ARROW );
+	wndclass.hCursor = LoadCursor(nullptr, IDC_ARROW);
 	wndclass.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);  // ソースはDirectXのSample
 	wndclass.lpszMenuName = nullptr;
 	wndclass.lpszClassName = wndclassName;
 
 	if (!RegisterClass(&wndclass)) { // エラー
-		ThrowErrorMessage(L"RegisterClass");
+		OutputDebugStringW(L"failed: RegisterClass\n");
+		throw 0;
 	}
 
 	// クライアント領域が 640 x 480 のウィンドウを作成
-	RECT rc = {0, 0, dxstg::clientWidth, dxstg::clientHeight};
-    AdjustWindowRect( &rc, WS_OVERLAPPEDWINDOW, false );
+	RECT rc = { 0, 0, dxstg::clientWidth, dxstg::clientHeight };
+	AdjustWindowRect(&rc, WS_OVERLAPPEDWINDOW, false);
 
-	HWND hWnd = CreateWindow( wndclassName, _T("裏講座サンプル"),
-	                      WS_OVERLAPPEDWINDOW,
-						  CW_USEDEFAULT, CW_USEDEFAULT, rc.right - rc.left, rc.bottom - rc.top, nullptr,
-						  nullptr, hInstance, nullptr );
+	hWnd = CreateWindow(wndclassName, _T("裏講座サンプル"),
+		WS_OVERLAPPEDWINDOW,
+		CW_USEDEFAULT, CW_USEDEFAULT, rc.right - rc.left, rc.bottom - rc.top, nullptr,
+		nullptr, hInstance, nullptr);
 
 	if (hWnd == NULL) { // エラー
-		ThrowErrorMessage(L"CreateWindow");
-		return 0;
+		OutputDebugStringW(L"failed: CreateWindow\n");
+		throw 0;
 	}
 
 	// ここから DirectX11 の初期化
-
-	ComPtr<ID3D11Device> device;
-	ComPtr<IDXGISwapChain> swapChain;
-	ComPtr<ID3D11DeviceContext> immediateContext;
-	D3D_FEATURE_LEVEL featureLevel;
-	ComPtr<ID3D11Texture2D> backBuffer;
-	ComPtr<ID3D11RenderTargetView> renderTargetView;
-	D3D11_VIEWPORT viewports[1];
-
 	// スワップチェイン、デバイス、デバイスコンテクストの作成
 	{
 		DXGI_SWAP_CHAIN_DESC swapChainDesc;
@@ -396,14 +322,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
 
 	switch (featureLevel) {
 		case D3D_FEATURE_LEVEL_9_1:  OutputDebugString(_T("feature level 9.1\n")); break;
-        case D3D_FEATURE_LEVEL_9_2:  OutputDebugString(_T("feature level 9.2\n")); break;
-        case D3D_FEATURE_LEVEL_9_3:  OutputDebugString(_T("feature level 9.3\n")); break;
-        case D3D_FEATURE_LEVEL_10_0: OutputDebugString(_T("feature level 10.0\n")); break;
-        case D3D_FEATURE_LEVEL_10_1: OutputDebugString(_T("feature level 10.1\n")); break;
-        case D3D_FEATURE_LEVEL_11_0: OutputDebugString(_T("feature level 11.0\n")); break;
-        case D3D_FEATURE_LEVEL_11_1: OutputDebugString(_T("feature level 11.1\n")); break;
-        case D3D_FEATURE_LEVEL_12_0: OutputDebugString(_T("feature level 12.0\n")); break;
-        case D3D_FEATURE_LEVEL_12_1: OutputDebugString(_T("feature level 12.1\n")); break;
+		case D3D_FEATURE_LEVEL_9_2:  OutputDebugString(_T("feature level 9.2\n")); break;
+		case D3D_FEATURE_LEVEL_9_3:  OutputDebugString(_T("feature level 9.3\n")); break;
+		case D3D_FEATURE_LEVEL_10_0: OutputDebugString(_T("feature level 10.0\n")); break;
+		case D3D_FEATURE_LEVEL_10_1: OutputDebugString(_T("feature level 10.1\n")); break;
+		case D3D_FEATURE_LEVEL_11_0: OutputDebugString(_T("feature level 11.0\n")); break;
+		case D3D_FEATURE_LEVEL_11_1: OutputDebugString(_T("feature level 11.1\n")); break;
+		case D3D_FEATURE_LEVEL_12_0: OutputDebugString(_T("feature level 12.0\n")); break;
+		case D3D_FEATURE_LEVEL_12_1: OutputDebugString(_T("feature level 12.1\n")); break;
 		default:
 			break;
 	}
@@ -431,17 +357,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
 
 	// DirectX11 初期化終わり
 
-	ComPtr<ID3D11ShaderResourceView> srvXchu;
-	ComPtr<ID3D11ShaderResourceView> srvBullet;
-	ComPtr<ID3D11InputLayout> inputLayout;
-	ComPtr<ID3D11VertexShader> vertexShader;
-	ComPtr<ID3D11Buffer> vsCBuffer;
-	ComPtr<ID3D11PixelShader> pixelShader;
-	ComPtr<ID3D11Buffer> psCBuffer;
-	ComPtr<ID3D11SamplerState> psSamplerState;
-	ComPtr<ID3D11Buffer> vertexBuffer;
-	ComPtr<ID3D11RasterizerState> rasterizerState;
-	ComPtr<ID3D11BlendState> blendState;
 
 	// テクスチャを読み込み、ShaderResourceViewを作成。
 
@@ -455,11 +370,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
 	{
 		BinFile vsBin(L"data/VertexShader.cso");
 		if (!vsBin) {
-			ThrowErrorMessage(L"BinFile (VertexShader.cso)");
+			OutputDebugStringW(L"failed: BinFile (VertexShader.cso)\n");
+			throw 0;
 		}
 		ThrowIfFailed(L"CreateVertexShader",
 			device->CreateVertexShader(vsBin.get(), vsBin.size(), nullptr, vertexShader.ReleaseAndGetAddressOf()));
-		
+
 		// インプットレイアウトの作成
 		D3D11_INPUT_ELEMENT_DESC inputElems[] = {
 			{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
@@ -477,7 +393,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
 		bufferDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
 		bufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
 		bufferDesc.MiscFlags = 0;
-		
+
 		ThrowIfFailed(L"CreateBuffer (vs cbuffer)",
 			device->CreateBuffer(&bufferDesc, nullptr, vsCBuffer.ReleaseAndGetAddressOf()));
 	}
@@ -486,7 +402,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
 	{
 		BinFile psBin(L"data/PixelShader.cso");
 		if (!psBin) {
-			ThrowErrorMessage(L"BinFile (PixelShader.cso)");
+			OutputDebugStringW(L"failed: BinFile (PixelShader.cso)\n");
+			throw 0;
 		}
 		ThrowIfFailed(L"CreatePixelShader",
 			device->CreatePixelShader(psBin.get(), psBin.size(), nullptr, pixelShader.ReleaseAndGetAddressOf()));
@@ -501,7 +418,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
 		bufferDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
 		bufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
 		bufferDesc.MiscFlags = 0;
-		
+
 		ThrowIfFailed(L"CreateBuffer (ps cbuffer)",
 			device->CreateBuffer(&bufferDesc, nullptr, psCBuffer.ReleaseAndGetAddressOf()));
 	}
@@ -518,14 +435,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
 		// samplerDesc.MinLOD = -FLT_MAX;  // デフォルト
 		// samplerDesc.MaxLOD = FLT_MAX;  // デフォルト
 		samplerDesc.MipLODBias = 0.0f;
-        samplerDesc.MaxAnisotropy = 1;
-        samplerDesc.ComparisonFunc = D3D11_COMPARISON_ALWAYS;
-        samplerDesc.BorderColor[0] = 0;
-        samplerDesc.BorderColor[1] = 0;
-        samplerDesc.BorderColor[2] = 0;
-        samplerDesc.BorderColor[3] = 0;
-        samplerDesc.MinLOD = 0;
-        samplerDesc.MaxLOD = D3D11_FLOAT32_MAX;
+		samplerDesc.MaxAnisotropy = 1;
+		samplerDesc.ComparisonFunc = D3D11_COMPARISON_ALWAYS;
+		samplerDesc.BorderColor[0] = 0;
+		samplerDesc.BorderColor[1] = 0;
+		samplerDesc.BorderColor[2] = 0;
+		samplerDesc.BorderColor[3] = 0;
+		samplerDesc.MinLOD = 0;
+		samplerDesc.MaxLOD = D3D11_FLOAT32_MAX;
 
 		ThrowIfFailed(L"CreateSamplerState",
 			device->CreateSamplerState(&samplerDesc, psSamplerState.ReleaseAndGetAddressOf()));
@@ -539,7 +456,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
 		bufferDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
 		bufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
 		bufferDesc.MiscFlags = 0;
-		
+
 		ThrowIfFailed(L"CreateBuffer (vertex buffer)",
 			device->CreateBuffer(&bufferDesc, nullptr, vertexBuffer.ReleaseAndGetAddressOf()));
 	}
@@ -600,148 +517,327 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
 		immediateContext->OMSetBlendState(blendState.Get(), blendColor, 0xffffffff);
 	}
 
+	// LOGFONTの解説 https://msdn.microsoft.com/ja-jp/windows/desktop/dd145037
+	LOGFONTW logfont;
+	logfont.lfHeight = 30;
+	logfont.lfWidth = 0;
+	logfont.lfEscapement = 0;
+	logfont.lfOrientation = 0;
+	logfont.lfWeight = FW_DONTCARE; // 普通
+	// logfont.lfWeight = FW_BOLD;  // ボールド
+	logfont.lfItalic = FALSE;
+	logfont.lfUnderline = FALSE;
+	logfont.lfStrikeOut = FALSE;
+	logfont.lfCharSet = SHIFTJIS_CHARSET;
+	logfont.lfOutPrecision = OUT_TT_ONLY_PRECIS;
+	logfont.lfClipPrecision = CLIP_DEFAULT_PRECIS;
+	logfont.lfQuality = PROOF_QUALITY;
+	logfont.lfPitchAndFamily = DEFAULT_PITCH | FF_DONTCARE;
+	wchar_t fontName[] = L"メイリオ";
+	CopyMemory(logfont.lfFaceName, fontName, sizeof(fontName));
+
+	font = std::make_unique<FontTextureMap>(device.Get(), logfont, false);
+
 	// window を表示
-	ShowWindow(hWnd, nCmdShow);
-	
-	// 初期ゲームオブジェクトの追加
-	{
-		auto player = std::make_unique<Player>();
-		SetPlayer(player.get());
-		AddObject(std::move(player));
-		AddObject(std::make_unique<Enemy>(3.f, 0.f));
+	ShowWindow(hWnd, SW_SHOW);
+}
+
+// リソースの解放
+void CleanUp(HINSTANCE hInstance)
+{
+	if (hWnd) {
+		ShowWindow(hWnd, SW_HIDE); // window を非表示
 	}
 
-	//メインループ
-	double frameTime = 0.f;
-	auto begin = std::chrono::high_resolution_clock::now();
-	MSG hMsg;
-	while(true){
-		// ウィンドウメッセージ処理
-		// この中でキーボード入力情報も更新される
-		while(PeekMessageW(&hMsg, NULL, 0, 0, PM_REMOVE)){
-			if(hMsg.message == WM_QUIT){
-				goto End;
-			}
-			TranslateMessage(&hMsg);
-			DispatchMessage(&hMsg);
-		}
+	font.reset();
 
-		// 画面のクリア
-		float clearColor[] = { 0.1f, 0.3f, 0.5f, 1.0f };
-		immediateContext->ClearRenderTargetView(renderTargetView.Get(), clearColor);
+	backBuffer.Reset();
+	renderTargetView.Reset();
+	srvXchu.Reset();
+	srvBullet.Reset();
+	inputLayout.Reset();
+	vertexShader.Reset();
+	vsCBuffer.Reset();
+	pixelShader.Reset();
+	psCBuffer.Reset();
+	psSamplerState.Reset();
+	vertexBuffer.Reset();
+	rasterizerState.Reset();
+	blendState.Reset();
 
-		// 更新
-		for (const auto& obj : _objects) {
-			obj->update();
-		}
+	immediateContext.Reset();
+	swapChain.Reset();
+	device.Reset();
 
-		// 削除可能要素の削除
-		{
-			auto it = std::remove_if(_objects.begin(), _objects.end(),
-				[](const auto& obj) { return obj->removable; });
-			_objects.erase(it, _objects.end());
-		}
+	if (hWnd) {
+		DestroyWindow(hWnd);
+	}
+	UnregisterClassW(wndclassName, hInstance);
+}
 
-		// 衝突判定の実施
-		for (auto it1 = _objects.begin(); it1 != _objects.end(); ++it1) {
-			auto it2 = it1;
-			++it2;
-			for (; it2 != _objects.end(); ++it2) {
-				if ((*it1)->getHitRect().intersects((*it2)->getHitRect())) {
-					(*it1)->hit(**it2);
-					(*it2)->hit(**it1);
-				}
-			}
-		}
-		
-		// 削除可能要素の削除
-		{
-			auto it = std::remove_if(_objects.begin(), _objects.end(),
-				[](const auto& obj) { return obj->removable; });
-			_objects.erase(it, _objects.end());
-		}
+// 左上を x, y として文字列を描画
+void DrawString(float x, float y, _In_z_ const wchar_t *str)
+{
+	const float x0 = x;
+	for (; *str != L'\0'; ++str) {
+		if (*str == L'\n') {
+			x = x0;
+			y += font->getTextMetric().tmHeight;
+		} else {
+			const auto& glyph = (*font)[*str];
 
-		// レンダリング
+			if (!iswspace(*str)) {
+				// 頂点座標を設定
+				// 参考: http://marupeke296.com/WINT_GetGlyphOutline.html
 
-		// カメラの配置を決定
-		{
-			using namespace DirectX;
-			XMMATRIX viewProj
-				= XMMatrixLookAtLH(XMVectorSet(0, 0, -8, 1), XMVectorSet(0, 0, 0, 1), XMVectorSet(0, 1, 0, 1))
-				* XMMatrixPerspectiveFovLH(XMConvertToRadians(45), (float)clientWidth / clientHeight, 0.1f, 100.f);
-
-			D3D11_MAPPED_SUBRESOURCE subresource;
-			immediateContext->Map(vsCBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &subresource);
-			XMStoreFloat4x4((XMFLOAT4X4*)subresource.pData, XMMatrixTranspose(viewProj));  // 行列は転置します。
-			immediateContext->Unmap(vsCBuffer.Get(), 0);
-		}
-
-		for (const auto& obj : _objects) {
-			// 頂点座標を設定
-			{
 				D3D11_MAPPED_SUBRESOURCE subresource;
 				immediateContext->Map(vertexBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &subresource);
 
+				float xtemp = x + glyph.glyphmetrics.gmptGlyphOrigin.x;
+				float ytemp = y + font->getTextMetric().tmAscent - glyph.glyphmetrics.gmptGlyphOrigin.y;
+
 				auto vertexes = (Vertex*)subresource.pData;
-				vertexes[0].x = obj->getDrawRect().maxX; vertexes[0].y = obj->getDrawRect().maxY;
-				vertexes[1].x = obj->getDrawRect().minX; vertexes[1].y = obj->getDrawRect().maxY;
-				vertexes[2].x = obj->getDrawRect().maxX; vertexes[2].y = obj->getDrawRect().minY;
-				vertexes[3].x = obj->getDrawRect().minX; vertexes[3].y = obj->getDrawRect().minY;
+				vertexes[0].x = xtemp;                                  vertexes[0].y = ytemp;
+				vertexes[1].x = xtemp + glyph.glyphmetrics.gmBlackBoxX; vertexes[1].y = ytemp;
+				vertexes[2].x = xtemp;                                  vertexes[2].y = ytemp + glyph.glyphmetrics.gmBlackBoxY;
+				vertexes[3].x = xtemp + glyph.glyphmetrics.gmBlackBoxX; vertexes[3].y = ytemp + glyph.glyphmetrics.gmBlackBoxY;
 
 				for (int i = 0; i < 4; ++i) {
 					vertexes[i].z = 0.f;
 				}
 
-				vertexes[0].u = obj->isMirrorX() ? 0.f : 1.f; vertexes[0].v = obj->isMirrorY() ? 1.f : 0.f;
-				vertexes[1].u = obj->isMirrorX() ? 1.f : 0.f; vertexes[1].v = obj->isMirrorY() ? 1.f : 0.f;
-				vertexes[2].u = obj->isMirrorX() ? 0.f : 1.f; vertexes[2].v = obj->isMirrorY() ? 0.f : 1.f;
-				vertexes[3].u = obj->isMirrorX() ? 1.f : 0.f; vertexes[3].v = obj->isMirrorY() ? 0.f : 1.f;
+				vertexes[0].u = 0.f; vertexes[0].v = 0.f;
+				vertexes[1].u = 1.f; vertexes[1].v = 0.f;
+				vertexes[2].u = 0.f; vertexes[2].v = 1.f;
+				vertexes[3].u = 1.f; vertexes[3].v = 1.f;
 
 				immediateContext->Unmap(vertexBuffer.Get(), 0);
+
+				// テクスチャを設定
+				immediateContext->PSSetShaderResources(0, 1, glyph.shaderResourceView.GetAddressOf());
+
+				// 描画
+				immediateContext->Draw(4, 0);
+			}
+
+			x += glyph.glyphmetrics.gmCellIncX;
+		}
+	}
+}
+
+} // end unnamed namespace
+
+
+namespace dxstg {
+
+void AddObject(std::unique_ptr<StgObject>&& newObject)
+{
+	_objects.emplace_back(std::move(newObject));
+}
+
+Player* GetPlayer()
+{
+	return _player;
+}
+
+void SetPlayer(Player* p)
+{
+	_player = p;
+}
+
+Input GetInput()
+{
+	return _input;
+}
+
+} // end dxstg
+
+
+int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLine, int nCmdShow)
+{
+	using namespace dxstg;
+
+	try {
+		ThrowIfFailed(L"CoInitialize",
+			CoInitialize(nullptr));  // テクスチャの読み込みがCOMのため、これを呼び出す必要がある。
+
+		OutputDebugString(_T("こんにちわーるど\n"));
+
+		Init(hInstance);  // リソース初期化
+
+		// 初期ゲームオブジェクトの追加
+		{
+			auto player = std::make_unique<Player>();
+			SetPlayer(player.get());
+			AddObject(std::move(player));
+			AddObject(std::make_unique<Enemy>(3.f, 0.f));
+		}
+
+		//メインループ
+		double frameTime = 0.f;
+		auto begin = std::chrono::high_resolution_clock::now();
+		MSG hMsg;
+		while (true) {
+			// ウィンドウメッセージ処理
+			// この中でキーボード入力情報も更新される
+			while (PeekMessageW(&hMsg, NULL, 0, 0, PM_REMOVE)) {
+				if (hMsg.message == WM_QUIT) {
+					goto End;
+				}
+				TranslateMessage(&hMsg);
+				DispatchMessage(&hMsg);
+			}
+
+			// 画面のクリア
+			float clearColor[] = { 0.1f, 0.3f, 0.5f, 1.0f };
+			immediateContext->ClearRenderTargetView(renderTargetView.Get(), clearColor);
+
+			// 更新
+			for (const auto& obj : _objects) {
+				obj->update();
+			}
+
+			// 削除可能要素の削除
+			{
+				auto it = std::remove_if(_objects.begin(), _objects.end(),
+					[](const auto& obj) { return obj->removable; });
+				_objects.erase(it, _objects.end());
+			}
+
+			// 衝突判定の実施
+			for (auto it1 = _objects.begin(); it1 != _objects.end(); ++it1) {
+				auto it2 = it1;
+				++it2;
+				for (; it2 != _objects.end(); ++it2) {
+					if ((*it1)->getHitRect().intersects((*it2)->getHitRect())) {
+						(*it1)->hit(**it2);
+						(*it2)->hit(**it1);
+					}
+				}
+			}
+
+			// 削除可能要素の削除
+			{
+				auto it = std::remove_if(_objects.begin(), _objects.end(),
+					[](const auto& obj) { return obj->removable; });
+				_objects.erase(it, _objects.end());
+			}
+
+			// レンダリング
+
+			// カメラの配置を決定
+			{
+				using namespace DirectX;
+				XMMATRIX viewProj
+					= XMMatrixLookAtLH(XMVectorSet(0, 0, -8, 1), XMVectorSet(0, 0, 0, 1), XMVectorSet(0, 1, 0, 1))
+					* XMMatrixPerspectiveFovLH(XMConvertToRadians(45), (float)clientWidth / clientHeight, 0.1f, 100.f);
+
+				D3D11_MAPPED_SUBRESOURCE subresource;
+				immediateContext->Map(vsCBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &subresource);
+				XMStoreFloat4x4((XMFLOAT4X4*)subresource.pData, XMMatrixTranspose(viewProj));  // 行列は転置します。
+				immediateContext->Unmap(vsCBuffer.Get(), 0);
+			}
+
+			// オブジェクトの描画
+			for (const auto& obj : _objects) {
+				// 頂点座標を設定
+				{
+					D3D11_MAPPED_SUBRESOURCE subresource;
+					immediateContext->Map(vertexBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &subresource);
+
+					auto vertexes = (Vertex*)subresource.pData;
+					vertexes[0].x = obj->getDrawRect().maxX; vertexes[0].y = obj->getDrawRect().maxY;
+					vertexes[1].x = obj->getDrawRect().minX; vertexes[1].y = obj->getDrawRect().maxY;
+					vertexes[2].x = obj->getDrawRect().maxX; vertexes[2].y = obj->getDrawRect().minY;
+					vertexes[3].x = obj->getDrawRect().minX; vertexes[3].y = obj->getDrawRect().minY;
+
+					for (int i = 0; i < 4; ++i) {
+						vertexes[i].z = 0.f;
+					}
+
+					vertexes[0].u = obj->isMirrorX() ? 0.f : 1.f; vertexes[0].v = obj->isMirrorY() ? 1.f : 0.f;
+					vertexes[1].u = obj->isMirrorX() ? 1.f : 0.f; vertexes[1].v = obj->isMirrorY() ? 1.f : 0.f;
+					vertexes[2].u = obj->isMirrorX() ? 0.f : 1.f; vertexes[2].v = obj->isMirrorY() ? 0.f : 1.f;
+					vertexes[3].u = obj->isMirrorX() ? 1.f : 0.f; vertexes[3].v = obj->isMirrorY() ? 0.f : 1.f;
+
+					immediateContext->Unmap(vertexBuffer.Get(), 0);
+				}
+
+				// 色を設定
+				{
+					D3D11_MAPPED_SUBRESOURCE subresource;
+					immediateContext->Map(psCBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &subresource);
+					*reinterpret_cast<Color*>(subresource.pData) = obj->getColor();
+					immediateContext->Unmap(psCBuffer.Get(), 0);
+				}
+
+				// テクスチャを設定
+				ComPtr<ID3D11ShaderResourceView> selectedSrv;
+				switch (obj->getTextureID()) {
+					case StgObject::TextureID::XCHU:
+						selectedSrv = srvXchu;
+						break;
+					case StgObject::TextureID::BULLET:
+						selectedSrv = srvBullet;
+						break;
+				}
+				immediateContext->PSSetShaderResources(0, 1, selectedSrv.GetAddressOf());
+
+				// 描画
+				immediateContext->Draw(4, 0);
+			}
+
+			// 文字の描画
+			// スクリーン座標系に設定
+			{
+				using namespace DirectX;
+				XMMATRIX viewProj = XMMatrixSet(
+					2 / (float)clientWidth, 0, 0, 0,
+					0, -2 / (float)clientHeight, 0, 0,
+					0, 0, 1, 0,
+					-1, 1, 0, 1
+				);
+
+				D3D11_MAPPED_SUBRESOURCE subresource;
+				immediateContext->Map(vsCBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &subresource);
+				XMStoreFloat4x4((XMFLOAT4X4*)subresource.pData, XMMatrixTranspose(viewProj));  // 行列は転置します。
+				immediateContext->Unmap(vsCBuffer.Get(), 0);
 			}
 
 			// 色を設定
 			{
 				D3D11_MAPPED_SUBRESOURCE subresource;
 				immediateContext->Map(psCBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &subresource);
-				*reinterpret_cast<Color*>(subresource.pData) = obj->getColor();
+				*reinterpret_cast<Color*>(subresource.pData) = Color(1, 1, 1, 0.8f);
 				immediateContext->Unmap(psCBuffer.Get(), 0);
 			}
 
-			// テクスチャを設定
-			ComPtr<ID3D11ShaderResourceView> selectedSrv;
-			switch (obj->getTextureID()) {
-				case StgObject::TextureID::XCHU:
-					selectedSrv = srvXchu;
-					break;
-				case StgObject::TextureID::BULLET:
-					selectedSrv = srvBullet;
-					break;
-			}
-			immediateContext->PSSetShaderResources(0, 1, selectedSrv.GetAddressOf());
+			// 文字を描画
+			{
+				std::wostringstream buf;
+				buf << L"fps: " << (1.0 / frameTime * 1000) << std::endl;
+				buf << L"日本語も書けるよ。";
 
-			// 描画
-			immediateContext->Draw(4, 0);
+				DrawString(0, 0, buf.str().c_str());
+			}
+			// 表示
+			// 第一引数に1を入れることで、1回垂直同期をとる。
+			swapChain->Present(1, 0);
+
+			// フレームレートの計算
+			auto end = std::chrono::high_resolution_clock::now();
+			std::chrono::duration<double, std::milli> duration = end - begin;
+			frameTime = frameTime * 0.95 + duration.count() * 0.05;
+
+			begin = std::move(end);
 		}
 
-
-		// 表示
-		// 第一引数に1を入れることで、1回垂直同期をとる。
-		swapChain->Present(1, 0);
-		
-		// フレームレートの計算
-		auto end = std::chrono::high_resolution_clock::now();
-		std::chrono::duration<double, std::milli> duration = end - begin;
-		frameTime = frameTime * 0.95 + duration.count() * 0.05;
-
-		// std::wostringstream buf;
-		// buf << "frame time: " << frameTime << '\n';
-		// OutputDebugString(buf.str().c_str());
-		
-		begin = std::move(end);
+	End:
+		CleanUp(hInstance);
+	} catch (...) {
+		CleanUp(hInstance);
 	}
 
-End:
-
+	// CoUninitialize();  // これやっちゃうとWICImagingFactoryの解放に失敗する
 	return 0;
 }
